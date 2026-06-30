@@ -644,7 +644,17 @@ body::before{content:'';position:fixed;inset:0;
 .pin-modal{
   display:flex;flex-direction:column;align-items:center;
   gap:0;width:100%;max-width:320px;padding:32px 24px 36px;
+  position:relative;
 }
+.pin-back-btn{
+  position:absolute;top:14px;left:14px;
+  background:none;border:none;color:var(--muted2);
+  font-size:12px;font-weight:600;cursor:pointer;
+  padding:5px 8px;border-radius:6px;transition:all .15s;
+  font-family:'Space Grotesk',sans-serif;display:none;
+}
+.pin-back-btn:hover{color:var(--text);background:var(--s3);}
+.pin-back-btn.show{display:block;}
 .pin-rest-dot{
   width:14px;height:14px;border-radius:50%;margin-bottom:12px;
   box-shadow:0 0 16px currentColor;
@@ -1011,6 +1021,7 @@ body::before{content:'';position:fixed;inset:0;
 <!-- PIN MODAL -->
 <div class="pin-overlay" id="pin-overlay">
   <div class="pin-modal">
+    <button class="pin-back-btn" id="pin-back-btn" onclick="pinGoBack()">← Volver</button>
     <div class="pin-rest-dot" id="pin-rest-dot"></div>
     <div class="pin-rest-name" id="pin-rest-name"></div>
     <div class="pin-mode-label" id="pin-mode-label">Introduce tu PIN</div>
@@ -1437,6 +1448,25 @@ async function loadFromSupabase(){
   showLoadingOverlay(false);
 }
 
+// On-demand sync of check buckets (used when opening report/global to force freshness)
+async function syncCheckBucketsNow(){
+  try{
+    const now=new Date();
+    const ym=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    if(!state.whoChecked) state.whoChecked={};
+    for(const r of RESTAURANTS){
+      const bucket=await supaGet(`checks_${r.id}_${ym}`);
+      if(bucket){
+        const checks=bucket._checks||bucket;
+        const who=bucket._who||{};
+        Object.assign(state,checks);
+        Object.assign(state.whoChecked,who);
+      }
+    }
+    try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+  }catch(e){ /* silent */ }
+}
+
 // Real-time subscription — listen for changes from other devices
 function subscribeRealtime(){
   setInterval(async ()=>{
@@ -1575,8 +1605,15 @@ function showPage(id){
   if(pg) pg.classList.add('active');
   const btn=document.querySelector(`.tnb[onclick="showPage('${id}')"]`);
   if(btn) btn.classList.add('active');
-  if(id==='global') renderGlobal();
-  if(id==='report') renderReport();
+  if(id==='global'){
+    renderGlobal();
+    syncCheckBucketsNow().then(()=>renderGlobal());
+  }
+  if(id==='report'){
+    renderReport();
+    // Refresh from Supabase in background to ensure freshest data
+    syncCheckBucketsNow().then(()=>renderReport());
+  }
 }
 
 // ═══════════════════════════════════
@@ -1596,6 +1633,7 @@ const ADMIN_PIN_KEY = 'bk_admin_pin';  // stored separately from main state
 const _unlockedRests = new Set();
 let _adminActive = false;
 let _managerRid = null;    // rid of active manager session
+let _quickViewMode = false; // true when entered via universal quick-view PIN (3559)
 let _pinCtx = null;
 let _pinBuffer = '';
 let _pinConfirm = '';
@@ -1659,6 +1697,7 @@ function handleAdminBtn(){
     _pinMode==='admin-setup' ? 'Elige tu PIN de administrador' : 'PIN de administrador';
   document.getElementById('pin-error').textContent='';
   pinUpdateDots();
+  document.getElementById('pin-back-btn').classList.add('show');
   document.getElementById('pin-overlay').classList.add('open');
 }
 
@@ -1673,11 +1712,16 @@ function openPinModal(rid, name, color, onSuccess){
   document.getElementById('pin-mode-label').textContent=hasPin?'Introduce tu PIN':'Elige un PIN de 4 dígitos';
   document.getElementById('pin-error').textContent='';
   pinUpdateDots();
+  document.getElementById('pin-back-btn').classList.add('show');
   document.getElementById('pin-overlay').classList.add('open');
 }
 function closePinModal(){
   document.getElementById('pin-overlay').classList.remove('open');
   _pinCtx=null;_pinBuffer='';_pinConfirm='';
+}
+// Go back from PIN modal without entering — just closes it
+function pinGoBack(){
+  closePinModal();
 }
 function pinUpdateDots(){
   for(let i=0;i<4;i++){
@@ -1839,6 +1883,17 @@ function pinSubmit(){
       }
     }
   } else {
+    // Universal quick-view PIN — works for ANY restaurant, view-only, no user selection
+    const QUICK_VIEW_PIN = '3559';
+    if(_pinBuffer === QUICK_VIEW_PIN){
+      _unlockedRests.add(rid);
+      closePinModal();
+      _quickViewMode = true; // flag: viewing without being logged in as a member
+      showPage('rest');
+      activateRestaurant(rid);
+      showToast('👁 Modo vista rápida (sin usuario)');
+      return;
+    }
     if(pinHash(_pinBuffer)===state.pins[rid]){
       _unlockedRests.add(rid);
       closePinModal();
@@ -3003,7 +3058,8 @@ function buildManagerBar(rid, container){
         document.getElementById('pin-mode-label').textContent=hasMgrPin?'PIN de gerente':'Elige tu PIN de gerente';
         document.getElementById('pin-error').textContent='';
         pinUpdateDots();
-        document.getElementById('pin-overlay').classList.add('open');
+        document.getElementById('pin-back-btn').classList.add('show');
+  document.getElementById('pin-overlay').classList.add('open');
       });
       right.appendChild(mgrBtn);
     }
@@ -3107,6 +3163,18 @@ function activateRestaurant(rid){
   const restPageSub=document.querySelector('#page-rest .ph p');
   restPageTitle.innerHTML=`<span style="color:${r.color}">${r.name}</span>`;
   restPageSub.textContent='Plan de limpieza · '+r.name;
+
+  // Force re-render with latest data (fixes "blank" issue when data loaded after initial build)
+  const di=document.querySelector(`#sv-${rid}-daily .daily-date-inp`);
+  if(di) di.dispatchEvent(new Event('change'));
+  refreshAllTeamPanels();
+
+  // Also do a fresh on-demand sync in background in case local cache is stale
+  syncCheckBucketsNow().then(()=>{
+    const di2=document.querySelector(`#sv-${rid}-daily .daily-date-inp`);
+    if(di2) di2.dispatchEvent(new Event('change'));
+    refreshAllTeamPanels();
+  });
 }
 
 // Monthly % — all days of this month
