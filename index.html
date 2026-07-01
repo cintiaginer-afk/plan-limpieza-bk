@@ -978,6 +978,22 @@ body::before{content:'';position:fixed;inset:0;
 .winner-sub{font-size:10px;color:rgba(251,191,36,.55);letter-spacing:.8px;text-transform:uppercase;}
 .winner-phrase{font-size:11px;color:rgba(251,191,36,.75);font-style:italic;text-align:center;margin-top:2px;max-width:180px;line-height:1.4;}
 
+
+/* ── SAVE BUTTON ── */
+.btn-save-now{
+  position:fixed;bottom:72px;right:16px;z-index:80;
+  background:linear-gradient(135deg,var(--green),#059669);
+  border:none;color:#fff;border-radius:12px;
+  padding:12px 20px;font-size:13px;font-weight:700;
+  cursor:pointer;font-family:'Space Grotesk',sans-serif;
+  box-shadow:0 4px 20px rgba(16,185,129,.4);
+  transition:all .2s;display:none;align-items:center;gap:8px;
+}
+.btn-save-now.show{display:flex;}
+.btn-save-now:hover{transform:translateY(-2px);box-shadow:0 6px 24px rgba(16,185,129,.5);}
+.btn-save-now:active{transform:scale(.96);}
+@media(max-width:640px){.btn-save-now{bottom:80px;}}
+
 </style>
 </head>
 <body>
@@ -1076,6 +1092,7 @@ body::before{content:'';position:fixed;inset:0;
 
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
+<button class="btn-save-now" id="btn-save-now" onclick="manualSaveAll()">💾 Guardar</button>
 
 <!-- ══════════════════════════
      PAGE: GLOBAL
@@ -1233,8 +1250,8 @@ const SUPA_URL = 'https://sayicvyimcaerxbjyglf.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNheWljdnlpbWNhZXJ4Ymp5Z2xmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4MDk3MTMsImV4cCI6MjA5NzM4NTcxM30.Ex1VyqBu07FoLdBqbC-Uuig0vwLP4Lyri5Ygm9TUkto';
 const SUPA_HDR = { 'Content-Type':'application/json', 'apikey': SUPA_KEY, 'Authorization': 'Bearer '+SUPA_KEY };
 
-// Local cache — same structure as before
-const SK='bk_plan_v2';
+// Local cache
+const SK='bk_plan_v3'; // bumped from v2 to clear old cached checks on all devices
 let state={};
 try{state=JSON.parse(localStorage.getItem(SK)||'{}');}catch(e){}
 
@@ -1290,11 +1307,35 @@ function stateKeyForCheck(checkKey){
   return `checks_${rid}_${ym}`;
 }
 
-// Save — write to localStorage immediately, queue Supabase write
+// Save — write to localStorage immediately, queue Supabase write (for non-check data)
 function save(){
   try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(flushToSupabase, 600);
+}
+
+// saveCheck — immediately saves a single check to Supabase (no debounce)
+// Used for all check toggling to prevent polling race conditions
+async function saveCheck(checkKey){
+  try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+  const entry = state[checkKey]||{done:false,date:null};
+  const lean = {done:!!entry.done, date:entry.date||null};
+  // Save check row immediately
+  await supaSet('chk::'+checkKey, lean);
+  // Save whoChecked for this key immediately
+  const who = state.whoChecked&&state.whoChecked[checkKey];
+  if(who){
+    await supaSet('who::'+checkKey, who);
+  } else {
+    // If unchecked, delete the who row too
+    try{
+      await fetch(`${SUPA_URL}/rest/v1/bk_state?key=eq.${encodeURIComponent('who::'+checkKey)}`,{
+        method:'DELETE', headers:SUPA_HDR
+      });
+    }catch(e){}
+  }
+  // Update global view
+  renderGlobal();
 }
 
 async function flushToSupabase(){
@@ -1371,7 +1412,7 @@ async function loadFromSupabase(){
     // Load ALL check rows (individual keys starting with 'chk::')
     try{
       const resp = await fetch(
-        `${SUPA_URL}/rest/v1/bk_state?key=like.chk::*&select=key,value&limit=5000`,
+        `${SUPA_URL}/rest/v1/bk_state?key=like.chk%3A%3A*&select=key,value&limit=5000`,
         {headers:{...SUPA_HDR,'Accept':'application/json'}}
       );
       if(resp.ok){
@@ -1389,7 +1430,7 @@ async function loadFromSupabase(){
     // Load ALL whoChecked rows
     try{
       const resp2 = await fetch(
-        `${SUPA_URL}/rest/v1/bk_state?key=like.who::*&select=key,value&limit=5000`,
+        `${SUPA_URL}/rest/v1/bk_state?key=like.who%3A%3A*&select=key,value&limit=5000`,
         {headers:{...SUPA_HDR,'Accept':'application/json'}}
       );
       if(resp2.ok){
@@ -1448,7 +1489,7 @@ async function syncCheckBucketsNow(){
     if(!state.whoChecked) state.whoChecked={};
     // Load checks
     const resp=await fetch(
-      `${SUPA_URL}/rest/v1/bk_state?key=like.chk::*&select=key,value&limit=5000`,
+      `${SUPA_URL}/rest/v1/bk_state?key=like.chk%3A%3A*&select=key,value&limit=5000`,
       {headers:{...SUPA_HDR,'Accept':'application/json'}}
     );
     if(resp.ok){
@@ -1462,7 +1503,7 @@ async function syncCheckBucketsNow(){
     }
     // Load who
     const resp2=await fetch(
-      `${SUPA_URL}/rest/v1/bk_state?key=like.who::*&select=key,value&limit=5000`,
+      `${SUPA_URL}/rest/v1/bk_state?key=like.who%3A%3A*&select=key,value&limit=5000`,
       {headers:{...SUPA_HDR,'Accept':'application/json'}}
     );
     if(resp2.ok){
@@ -1488,7 +1529,7 @@ function subscribeRealtime(){
 
         // Load all individual check rows
         const resp=await fetch(
-          `${SUPA_URL}/rest/v1/bk_state?key=like.chk::*&select=key,value&limit=5000`,
+          `${SUPA_URL}/rest/v1/bk_state?key=like.chk%3A%3A*&select=key,value&limit=5000`,
           {headers:{...SUPA_HDR,'Accept':'application/json'}}
         );
         if(resp.ok){
@@ -1505,7 +1546,7 @@ function subscribeRealtime(){
 
         // Load all who rows
         const resp2=await fetch(
-          `${SUPA_URL}/rest/v1/bk_state?key=like.who::*&select=key,value&limit=5000`,
+          `${SUPA_URL}/rest/v1/bk_state?key=like.who%3A%3A*&select=key,value&limit=5000`,
           {headers:{...SUPA_HDR,'Accept':'application/json'}}
         );
         if(resp2.ok){
@@ -1633,6 +1674,7 @@ function showPage(id){
   const btn=document.querySelector(`.tnb[onclick="showPage('${id}')"]`);
   if(btn) btn.classList.add('active');
   if(id==='global'){
+    const sb=document.getElementById('btn-save-now');if(sb)sb.classList.remove('show');
     renderGlobal();
     syncCheckBucketsNow().then(()=>renderGlobal());
   }
@@ -2326,11 +2368,12 @@ function buildDailyRow(rid,dateKey,task,refresh,taskList){
         showToast('Solo '+(checker?checker.name:'quien lo marcó')+' puede desmarcarlo',true);
         return;
       }
-      e2.done=false;
+      e2.done=false;e2.date=null;
       setEntry(rid,'d',dateKey,task.id,e2);
       clearWhoChecked(checkKey);
     }
     refresh();
+    saveCheck(checkKey); // immediate Supabase save, no debounce
   });
   return row;
 }
@@ -2461,6 +2504,7 @@ function buildTaskCard(rid,type,periodKey,task,list,refresh,showFreq=true){
     e2.done=true;e2.date=di.value;setEntry(rid,type,periodKey,task.id,e2);
     const user=currentUser(rid);if(user)setWhoChecked(checkKey,user.id);
     showToast('✓ Confirmado');refresh();
+    saveCheck(checkKey); // immediate Supabase save
   });
   cr.appendChild(di);cr.appendChild(cb);pa.appendChild(cr);
   card.appendChild(main);card.appendChild(pa);
@@ -2480,8 +2524,9 @@ function buildTaskCard(rid,type,periodKey,task,list,refresh,showFreq=true){
         showToast('Solo '+(checker2?checker2.name:'quien lo marcó')+' puede desmarcarlo',true);
         return;
       }
-      e2.done=false;setEntry(rid,type,periodKey,task.id,e2);
+      e2.done=false;e2.date=null;setEntry(rid,type,periodKey,task.id,e2);
       clearWhoChecked(checkKey);refresh();
+      saveCheck(checkKey); // immediate Supabase save
     }
   });
   return card;
@@ -3009,7 +3054,7 @@ function buildMonthlyView(rid,container){
 
     // Monthly task cards
     const hdr=document.createElement('div');hdr.className='monthly-tasks-hdr';hdr.textContent='TAREAS DEL MES';calWrap.appendChild(hdr);
-    const mk=`m-${rid}-${y}-${m}`;
+    const mk=`${y}-${m}`;
     tasks.forEach(t=>{
       let s=nthMon(t.weekNum);if(!s){for(let w=t.weekNum-1;w>=1;w--){s=nthMon(w);if(s)break;}}
       const e=Math.min(s+6,dim);
@@ -3191,6 +3236,9 @@ function activateRestaurant(rid){
   restPageTitle.innerHTML=`<span style="color:${r.color}">${r.name}</span>`;
   restPageSub.textContent='Plan de limpieza · '+r.name;
 
+  // Show save button when inside a restaurant
+  const saveBtn=document.getElementById('btn-save-now');
+  if(saveBtn) saveBtn.classList.add('show');
   // Force re-render with latest data (fixes "blank" issue when data loaded after initial build)
   const di=document.querySelector(`#sv-${rid}-daily .daily-date-inp`);
   if(di) di.dispatchEvent(new Event('change'));
@@ -3209,7 +3257,7 @@ function calcMonthlyPct(rid){
   const now=new Date();
   const y=now.getFullYear(),m=now.getMonth();
   const dim=new Date(y,m+1,0).getDate();
-  const mk=`m-${rid}-${y}-${m}`;
+  const mk=`${y}-${m}`;
   const apeT=getRestTasks(rid,'ape')||[];
   const cieT=getRestTasks(rid,'cie')||[];
   const wkTasks=Object.values(getRestTasks(rid,'weekly')||{}).flat();
@@ -3372,7 +3420,7 @@ function reportChangeMonth(delta){
 }
 
 function calcMemberProgressForMonth(rid, memberId, y, m){
-  const mk = `m-${rid}-${y}-${m}`;
+  const mk = `${y}-${m}`;
   // For monthly tasks in that specific month
   const moTasks = getRestTasks(rid,'monthly');
   const moKeys = moTasks.map(t=>ck(rid,'m',mk,t.id));
@@ -3506,6 +3554,35 @@ function exportReport(){
   a.download=`informe_limpieza_${MONTHS_ES[m]}_${y}.csv`;
   a.click();
   showToast('📊 CSV exportado');
+}
+
+
+// ═══════════════════════════════════
+// MANUAL SAVE — saves ALL current checks immediately
+// ═══════════════════════════════════
+async function manualSaveAll(){
+  const btn=document.getElementById('btn-save-now');
+  if(btn){ btn.textContent='💾 Guardando...'; btn.style.opacity='.7'; }
+  try{
+    // Save all check keys immediately
+    const checkKeys=Object.keys(state).filter(k=>k.startsWith('chk-'));
+    for(const k of checkKeys){
+      const entry=state[k]||{};
+      await supaSet('chk::'+k, {done:!!entry.done, date:entry.date||null});
+    }
+    // Save all whoChecked
+    if(state.whoChecked){
+      for(const k of Object.keys(state.whoChecked)){
+        await supaSet('who::'+k, state.whoChecked[k]);
+      }
+    }
+    try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+    showToast('✅ Guardado correctamente');
+    renderGlobal();
+  }catch(e){
+    showToast('⚠ Error al guardar, reintenta',true);
+  }
+  if(btn){ btn.textContent='💾 Guardar'; btn.style.opacity='1'; }
 }
 
 // ═══════════════════════════════════
