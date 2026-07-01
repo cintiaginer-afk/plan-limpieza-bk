@@ -2132,7 +2132,7 @@ function calcMemberProgress(rid, memberId){
   const y = now.getFullYear(), m = now.getMonth();
   const dk = todayStr(); // only today for daily
   const wk = getWeekKey(0);
-  const mk = `m-${rid}-${y}-${m}`;
+  const mk = `${y}-${m}`;
   const allKeys = [];
 
   // Daily — TODAY only
@@ -3039,7 +3039,7 @@ function buildMonthlyView(rid,container){
       if(wt&&wt.length){cell.style.borderLeft=`3px solid ${clsColor[wt[0].cls]}`;cell.style.background=clsBg[wt[0].cls];}
       const chips=document.createElement('div');chips.className='cal-chips';
       if(startMap[d]){
-        const t=startMap[d];const mk=`m-${rid}-${y}-${m}`;
+        const t=startMap[d];const mk=`${y}-${m}`;
         const done=getEntry(rid,'m',mk,t.id).done;
         const chip=document.createElement('div');chip.className='cc '+(done?'cc-done':'cc-'+t.cls);chip.textContent=(done?'✓ ':'')+t.label;
         chips.appendChild(chip);
@@ -3288,7 +3288,7 @@ function calcProgress(rid){
   const dk=todayStr();
   const wk=getWeekKey(0);
   const y=new Date().getFullYear(),m=new Date().getMonth();
-  const mk=`m-${rid}-${y}-${m}`;
+  const mk=`${y}-${m}`;
 
   function pct(tasks,type,key){
     if(!tasks||!tasks.length)return 0;
