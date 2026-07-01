@@ -1278,22 +1278,12 @@ async function supaSetPhoto(key, data){
 }
 
 // Partition state into logical buckets for Supabase keys
-// pins + admin → 'config'
-// team[rid]     → 'team_rid'
-// tasks[rid]    → 'tasks_rid'
-// checks        → 'checks_rid_YYYY-MM'  (partitioned by month)
-// whoChecked    → 'who_rid_YYYY-MM'
-// photos        → stored in bk_photos table
-
 function stateKeyForCheck(checkKey){
-  // checkKey = "chk-rid-type-date-taskid"
   const parts = checkKey.split('-');
   const rid = parts[1];
-  // date part: for daily "chk-rid-d-YYYY-MM-DD-taskid", for weekly "chk-rid-w-YYYY-Www-taskid"
-  // extract year-month
   let ym = '';
   const now = new Date();
-  if(parts[2]==='d' && parts[3]) ym = parts[3].substring(0,7); // YYYY-MM
+  if(parts[2]==='d' && parts[3]) ym = parts[3].substring(0,7);
   else if(parts[2]==='w' && parts[3]) ym = parts[3].substring(0,4)+'-'+now.toISOString().substring(5,7);
   else if(parts[2]==='m') ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   else ym = now.toISOString().substring(0,7);
@@ -1303,14 +1293,13 @@ function stateKeyForCheck(checkKey){
 // Save — write to localStorage immediately, queue Supabase write
 function save(){
   try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
-  // Debounce Supabase writes — flush after 800ms of no changes
   clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(flushToSupabase, 800);
+  _saveTimer = setTimeout(flushToSupabase, 600);
 }
 
 async function flushToSupabase(){
-  // Write config (pins, admin pin stored separately in localStorage)
-  const config = { pins: state.pins||{}, mgr_pins: state.mgr_pins||{} }; // whoChecked lives in check buckets
+  // Write config
+  const config = { pins: state.pins||{}, mgr_pins: state.mgr_pins||{} };
   await supaSet('config', config);
 
   // Write team per restaurant
@@ -1326,44 +1315,27 @@ async function flushToSupabase(){
       await supaSet('tasks_'+rid, state.tasks[rid]);
     }
   }
-  // Write custom sections per restaurant
+  // Write custom sections
   if(state.customSections){
     for(const rid of Object.keys(state.customSections)){
       await supaSet('sections_'+rid, state.customSections[rid]);
     }
   }
 
-  // Write checks + whoChecked — MERGE with existing Supabase data first
-  const checkBuckets = {};
-  Object.keys(state).forEach(k=>{
-    if(!k.startsWith('chk-')) return;
-    const bucket = stateKeyForCheck(k);
-    if(!checkBuckets[bucket]) checkBuckets[bucket] = {_checks:{}, _who:{}};
-    checkBuckets[bucket]._checks[k] = state[k];
-  });
-  if(state.whoChecked){
-    Object.keys(state.whoChecked).forEach(k=>{
-      const bucket = stateKeyForCheck(k);
-      if(!checkBuckets[bucket]) checkBuckets[bucket]={_checks:{},_who:{}};
-      checkBuckets[bucket]._who[k]=state.whoChecked[k];
-    });
+  // Write checks — each check key saved as its OWN row in Supabase
+  // This avoids merge conflicts between devices completely
+  const checkKeys = Object.keys(state).filter(k=>k.startsWith('chk-'));
+  for(const k of checkKeys){
+    const entry = state[k];
+    // Skip photo data in checks (photos are in bk_photos table)
+    const lean = {done: entry.done, date: entry.date};
+    await supaSet('chk::'+k, lean);
   }
-  for(const [bucket,data] of Object.entries(checkBuckets)){
-    // Merge: load existing bucket, apply local changes on top
-    try{
-      const existing = await supaGet(bucket);
-      if(existing){
-        const mergedChecks = Object.assign({}, existing._checks||existing, data._checks);
-        const mergedWho = Object.assign({}, existing._who||{}, data._who);
-        await supaSet(bucket, {_checks:mergedChecks, _who:mergedWho});
-        // Also update local state with any remote checks we didn't have
-        Object.assign(state, existing._checks||{});
-        if(!state.whoChecked) state.whoChecked={};
-        Object.assign(state.whoChecked, existing._who||{});
-      } else {
-        await supaSet(bucket, data);
-      }
-    }catch(e){ await supaSet(bucket, data); }
+  // Save whoChecked entries individually too
+  if(state.whoChecked){
+    for(const k of Object.keys(state.whoChecked)){
+      await supaSet('who::'+k, state.whoChecked[k]);
+    }
   }
 }
 
@@ -1374,7 +1346,7 @@ async function loadFromSupabase(){
     // Config
     const config = await supaGet('config');
     if(config){ state.pins=config.pins||{}; state.mgr_pins=config.mgr_pins||{}; }
-    if(!state.whoChecked) state.whoChecked={}; // always init fresh, filled by check buckets
+    if(!state.whoChecked) state.whoChecked={};
 
     // Teams
     if(!state.team) state.team={};
@@ -1396,19 +1368,41 @@ async function loadFromSupabase(){
       if(secs) state.customSections[r.id] = secs;
     }
 
-    // Checks + whoChecked — load combined bucket per restaurant/month
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-    if(!state.whoChecked) state.whoChecked={};
-    for(const r of RESTAURANTS){
-      const bucket = await supaGet(`checks_${r.id}_${ym}`);
-      if(bucket){
-        // New format: {_checks:{}, _who:{}}
-        if(bucket._checks) Object.assign(state, bucket._checks);
-        else Object.assign(state, bucket); // legacy format
-        if(bucket._who) Object.assign(state.whoChecked, bucket._who);
+    // Load ALL check rows (individual keys starting with 'chk::')
+    try{
+      const resp = await fetch(
+        `${SUPA_URL}/rest/v1/bk_state?key=like.chk::*&select=key,value&limit=5000`,
+        {headers:{...SUPA_HDR,'Accept':'application/json'}}
+      );
+      if(resp.ok){
+        const rows = await resp.json();
+        if(Array.isArray(rows)){
+          rows.forEach(row=>{
+            // row.key = 'chk::chk-rid-type-...'  → strip prefix
+            const ck = row.key.replace(/^chk::/, '');
+            state[ck] = row.value;
+          });
+        }
       }
-    }
+    }catch(e){ /* silent */ }
+
+    // Load ALL whoChecked rows
+    try{
+      const resp2 = await fetch(
+        `${SUPA_URL}/rest/v1/bk_state?key=like.who::*&select=key,value&limit=5000`,
+        {headers:{...SUPA_HDR,'Accept':'application/json'}}
+      );
+      if(resp2.ok){
+        const rows2 = await resp2.json();
+        if(Array.isArray(rows2)){
+          if(!state.whoChecked) state.whoChecked={};
+          rows2.forEach(row=>{
+            const ck = row.key.replace(/^who::/, '');
+            state.whoChecked[ck] = row.value;
+          });
+        }
+      }
+    }catch(e){ /* silent */ }
 
     // Photos — load from bk_photos with limit to avoid fetch errors
     try{
@@ -1448,19 +1442,36 @@ async function loadFromSupabase(){
   showLoadingOverlay(false);
 }
 
-// On-demand sync of check buckets (used when opening report/global to force freshness)
+// On-demand sync — reload all checks from Supabase (individual rows)
 async function syncCheckBucketsNow(){
   try{
-    const now=new Date();
-    const ym=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     if(!state.whoChecked) state.whoChecked={};
-    for(const r of RESTAURANTS){
-      const bucket=await supaGet(`checks_${r.id}_${ym}`);
-      if(bucket){
-        const checks=bucket._checks||bucket;
-        const who=bucket._who||{};
-        Object.assign(state,checks);
-        Object.assign(state.whoChecked,who);
+    // Load checks
+    const resp=await fetch(
+      `${SUPA_URL}/rest/v1/bk_state?key=like.chk::*&select=key,value&limit=5000`,
+      {headers:{...SUPA_HDR,'Accept':'application/json'}}
+    );
+    if(resp.ok){
+      const rows=await resp.json();
+      if(Array.isArray(rows)){
+        rows.forEach(row=>{
+          const ck=row.key.replace(/^chk::/,'');
+          state[ck]=row.value;
+        });
+      }
+    }
+    // Load who
+    const resp2=await fetch(
+      `${SUPA_URL}/rest/v1/bk_state?key=like.who::*&select=key,value&limit=5000`,
+      {headers:{...SUPA_HDR,'Accept':'application/json'}}
+    );
+    if(resp2.ok){
+      const rows2=await resp2.json();
+      if(Array.isArray(rows2)){
+        rows2.forEach(row=>{
+          const ck=row.key.replace(/^who::/,'');
+          state.whoChecked[ck]=row.value;
+        });
       }
     }
     try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
@@ -1471,60 +1482,76 @@ async function syncCheckBucketsNow(){
 function subscribeRealtime(){
   setInterval(async ()=>{
     if(!document.hidden){
-      const now = new Date();
-      const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-
-      // Sync checks + whoChecked from combined bucket
-      let anyChanged=false;
-      if(!state.whoChecked) state.whoChecked={};
-      for(const r of RESTAURANTS){
-        const bucket=await supaGet(`checks_${r.id}_${ym}`);
-        if(bucket){
-          const checks=bucket._checks||bucket;
-          const who=bucket._who||{};
-          const chkChanged=Object.keys(checks).some(k=>JSON.stringify(state[k])!==JSON.stringify(checks[k]));
-          const whoChanged=Object.keys(who).some(k=>state.whoChecked[k]!==who[k]);
-          if(chkChanged||whoChanged){
-            Object.assign(state,checks);
-            Object.assign(state.whoChecked,who);
-            anyChanged=true;
-          }
-        }
-      }
-      if(anyChanged){
-        try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
-        renderGlobal();
-        refreshAllTeamPanels();
-        // Re-render ALL daily views so checks appear immediately
-        RESTAURANTS.forEach(r=>{
-          const di=document.querySelector(`#sv-${r.id}-daily .daily-date-inp`);
-          if(di) di.dispatchEvent(new Event('change'));
-        });
-      }
-
-      // Sync photos
       try{
-        const photoResp2=await fetch(`${SUPA_URL}/rest/v1/bk_photos?select=key,data&limit=1000`,{headers:SUPA_HDR});
-        if(photoResp2.ok){
-          const photos=await photoResp2.json();
-          if(Array.isArray(photos)){
-            let photoChanged=false;
-            photos.forEach(p=>{
-              if(!state[p.key]) state[p.key]={done:false,date:null,photos:[]};
-              if(!state[p.key].photos) state[p.key].photos=[];
-              try{
-                const parsed=JSON.parse(p.data);
-                const arr=Array.isArray(parsed)?parsed:[{data:p.data,date:null}];
-                if(JSON.stringify(state[p.key].photos)!==JSON.stringify(arr)){
-                  state[p.key].photos=arr;photoChanged=true;
-                }
-              }catch{
-                if(!state[p.key].photos.length){state[p.key].photos=[{data:p.data,date:null}];photoChanged=true;}
+        if(!state.whoChecked) state.whoChecked={};
+        let anyChanged=false;
+
+        // Load all individual check rows
+        const resp=await fetch(
+          `${SUPA_URL}/rest/v1/bk_state?key=like.chk::*&select=key,value&limit=5000`,
+          {headers:{...SUPA_HDR,'Accept':'application/json'}}
+        );
+        if(resp.ok){
+          const rows=await resp.json();
+          if(Array.isArray(rows)){
+            rows.forEach(row=>{
+              const ck=row.key.replace(/^chk::/,'');
+              if(JSON.stringify(state[ck])!==JSON.stringify(row.value)){
+                state[ck]=row.value; anyChanged=true;
               }
             });
-            if(photoChanged){try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}}
           }
         }
+
+        // Load all who rows
+        const resp2=await fetch(
+          `${SUPA_URL}/rest/v1/bk_state?key=like.who::*&select=key,value&limit=5000`,
+          {headers:{...SUPA_HDR,'Accept':'application/json'}}
+        );
+        if(resp2.ok){
+          const rows2=await resp2.json();
+          if(Array.isArray(rows2)){
+            rows2.forEach(row=>{
+              const ck=row.key.replace(/^who::/,'');
+              if(state.whoChecked[ck]!==row.value){
+                state.whoChecked[ck]=row.value; anyChanged=true;
+              }
+            });
+          }
+        }
+
+        if(anyChanged){
+          try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+          renderGlobal();
+          refreshAllTeamPanels();
+          RESTAURANTS.forEach(r=>{
+            const di=document.querySelector(`#sv-${r.id}-daily .daily-date-inp`);
+            if(di) di.dispatchEvent(new Event('change'));
+          });
+        }
+
+        // Sync photos
+        try{
+          const photoResp2=await fetch(`${SUPA_URL}/rest/v1/bk_photos?select=key,data&limit=1000`,{headers:SUPA_HDR});
+          if(photoResp2.ok){
+            const photos=await photoResp2.json();
+            if(Array.isArray(photos)){
+              photos.forEach(p=>{
+                if(!state[p.key]) state[p.key]={done:false,date:null,photos:[]};
+                if(!state[p.key].photos) state[p.key].photos=[];
+                try{
+                  const parsed=JSON.parse(p.data);
+                  const arr=Array.isArray(parsed)?parsed:[{data:p.data,date:null}];
+                  if(JSON.stringify(state[p.key].photos)!==JSON.stringify(arr)){
+                    state[p.key].photos=arr;
+                  }
+                }catch{
+                  if(!state[p.key].photos.length) state[p.key].photos=[{data:p.data,date:null}];
+                }
+              });
+            }
+          }
+        }catch(e){}
       }catch(e){}
     }
   }, 15000);
