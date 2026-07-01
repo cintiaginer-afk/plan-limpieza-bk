@@ -1334,6 +1334,10 @@ async function saveCheck(checkKey){
       });
     }catch(e){}
   }
+  // Update sentinel so other devices know something changed
+  const ts = Date.now().toString();
+  await supaSet('sentinel', {ts});
+  _lastSentinel = ts; // update our own sentinel so we don't re-sync ourselves
   // Update global view
   renderGlobal();
 }
@@ -1516,86 +1520,83 @@ async function syncCheckBucketsNow(){
       }
     }
     try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+    // Capture current sentinel so we don't immediately re-sync after a manual sync
+    try{
+      const sr=await fetch(`${SUPA_URL}/rest/v1/bk_state?key=eq.sentinel&select=value`,{headers:{...SUPA_HDR,'Accept':'application/json'}});
+      if(sr.ok){const sd=await sr.json();if(sd[0]?.value?.ts) _lastSentinel=sd[0].value.ts;}
+    }catch(e){}
   }catch(e){ /* silent */ }
 }
 
 // Real-time subscription — listen for changes from other devices
+// Last known sentinel timestamp — only full sync if this changes
+let _lastSentinel = null;
+
 function subscribeRealtime(){
   setInterval(async ()=>{
-    if(!document.hidden){
-      try{
-        if(!state.whoChecked) state.whoChecked={};
-        let anyChanged=false;
+    if(document.hidden) return; // skip if tab not visible
+    try{
+      // Step 1: Check lightweight sentinel key (~50 bytes)
+      // We write this key every time ANY check changes
+      const sentinelResp = await fetch(
+        `${SUPA_URL}/rest/v1/bk_state?key=eq.sentinel&select=value`,
+        {headers:{...SUPA_HDR,'Accept':'application/json'}}
+      );
+      if(!sentinelResp.ok) return;
+      const sentinelData = await sentinelResp.json();
+      const currentSentinel = sentinelData[0]?.value?.ts || null;
 
-        // Load all individual check rows
-        const resp=await fetch(
-          `${SUPA_URL}/rest/v1/bk_state?key=like.chk%3A%3A*&select=key,value&limit=5000`,
-          {headers:{...SUPA_HDR,'Accept':'application/json'}}
-        );
-        if(resp.ok){
-          const rows=await resp.json();
-          if(Array.isArray(rows)){
-            rows.forEach(row=>{
-              const ck=row.key.replace(/^chk::/,'');
-              if(JSON.stringify(state[ck])!==JSON.stringify(row.value)){
-                state[ck]=row.value; anyChanged=true;
-              }
-            });
-          }
-        }
+      // Step 2: Only do full sync if sentinel changed
+      if(currentSentinel === _lastSentinel) return;
+      _lastSentinel = currentSentinel;
 
-        // Load all who rows
-        const resp2=await fetch(
-          `${SUPA_URL}/rest/v1/bk_state?key=like.who%3A%3A*&select=key,value&limit=5000`,
-          {headers:{...SUPA_HDR,'Accept':'application/json'}}
-        );
-        if(resp2.ok){
-          const rows2=await resp2.json();
-          if(Array.isArray(rows2)){
-            rows2.forEach(row=>{
-              const ck=row.key.replace(/^who::/,'');
-              if(state.whoChecked[ck]!==row.value){
-                state.whoChecked[ck]=row.value; anyChanged=true;
-              }
-            });
-          }
-        }
+      // Step 3: Full sync — only reached when something actually changed
+      if(!state.whoChecked) state.whoChecked={};
+      let anyChanged = false;
 
-        if(anyChanged){
-          try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
-          renderGlobal();
-          refreshAllTeamPanels();
-          RESTAURANTS.forEach(r=>{
-            const di=document.querySelector(`#sv-${r.id}-daily .daily-date-inp`);
-            if(di) di.dispatchEvent(new Event('change'));
+      const resp=await fetch(
+        `${SUPA_URL}/rest/v1/bk_state?key=like.chk%3A%3A*&select=key,value&limit=5000`,
+        {headers:{...SUPA_HDR,'Accept':'application/json'}}
+      );
+      if(resp.ok){
+        const rows=await resp.json();
+        if(Array.isArray(rows)){
+          rows.forEach(row=>{
+            const ck=row.key.replace(/^chk::/,'');
+            if(JSON.stringify(state[ck])!==JSON.stringify(row.value)){
+              state[ck]=row.value; anyChanged=true;
+            }
           });
         }
+      }
 
-        // Sync photos
-        try{
-          const photoResp2=await fetch(`${SUPA_URL}/rest/v1/bk_photos?select=key,data&limit=1000`,{headers:SUPA_HDR});
-          if(photoResp2.ok){
-            const photos=await photoResp2.json();
-            if(Array.isArray(photos)){
-              photos.forEach(p=>{
-                if(!state[p.key]) state[p.key]={done:false,date:null,photos:[]};
-                if(!state[p.key].photos) state[p.key].photos=[];
-                try{
-                  const parsed=JSON.parse(p.data);
-                  const arr=Array.isArray(parsed)?parsed:[{data:p.data,date:null}];
-                  if(JSON.stringify(state[p.key].photos)!==JSON.stringify(arr)){
-                    state[p.key].photos=arr;
-                  }
-                }catch{
-                  if(!state[p.key].photos.length) state[p.key].photos=[{data:p.data,date:null}];
-                }
-              });
+      const resp2=await fetch(
+        `${SUPA_URL}/rest/v1/bk_state?key=like.who%3A%3A*&select=key,value&limit=5000`,
+        {headers:{...SUPA_HDR,'Accept':'application/json'}}
+      );
+      if(resp2.ok){
+        const rows2=await resp2.json();
+        if(Array.isArray(rows2)){
+          rows2.forEach(row=>{
+            const ck=row.key.replace(/^who::/,'');
+            if(state.whoChecked[ck]!==row.value){
+              state.whoChecked[ck]=row.value; anyChanged=true;
             }
-          }
-        }catch(e){}
-      }catch(e){}
-    }
-  }, 15000);
+          });
+        }
+      }
+
+      if(anyChanged){
+        try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+        renderGlobal();
+        refreshAllTeamPanels();
+        RESTAURANTS.forEach(r=>{
+          const di=document.querySelector(`#sv-${r.id}-daily .daily-date-inp`);
+          if(di) di.dispatchEvent(new Event('change'));
+        });
+      }
+    }catch(e){}
+  }, 90000);
 }
 
 // Photo save/load via Supabase bk_photos table
@@ -3577,6 +3578,9 @@ async function manualSaveAll(){
       }
     }
     try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
+    const ts2=Date.now().toString();
+    await supaSet('sentinel',{ts:ts2});
+    _lastSentinel=ts2;
     showToast('✅ Guardado correctamente');
     renderGlobal();
   }catch(e){
