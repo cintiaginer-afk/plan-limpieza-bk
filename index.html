@@ -1449,35 +1449,8 @@ async function loadFromSupabase(){
       }
     }catch(e){ /* silent */ }
 
-    // Photos — load from bk_photos with limit to avoid fetch errors
-    try{
-      const photoCtrl=new AbortController();
-      const photoTimeout=setTimeout(()=>photoCtrl.abort(),8000);
-      const photoResp = await fetch(
-        `${SUPA_URL}/rest/v1/bk_photos?select=key,data&limit=1000`,
-        {headers:{...SUPA_HDR,'Accept':'application/json'}, signal:photoCtrl.signal}
-      );
-      clearTimeout(photoTimeout);
-      if(photoResp.ok){
-        const photos = await photoResp.json();
-        if(Array.isArray(photos)){
-          photos.forEach(p=>{
-            // Support both old format (photo:string) and new (photos:array)
-            if(!state[p.key]) state[p.key]={done:false,date:null,photos:[]};
-            if(!state[p.key].photos) state[p.key].photos=[];
-            // p.data can be JSON array or single base64 string (backwards compat)
-            try{
-              const parsed=JSON.parse(p.data);
-              if(Array.isArray(parsed)) state[p.key].photos=parsed;
-              else state[p.key].photos=[{data:p.data,date:state[p.key].date||null}];
-            }catch{
-              if(p.data && !state[p.key].photos.length)
-                state[p.key].photos=[{data:p.data,date:state[p.key].date||null}];
-            }
-          });
-        }
-      }
-    }catch(e){ /* Photo load failed silently — will retry on next sync */ }
+    // Photos — NOT loaded on boot to save egress
+    // Photos are loaded lazily when user opens the photo area of a task
 
     // Persist to localStorage cache
     try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
@@ -2470,10 +2443,10 @@ function buildTaskCard(rid,type,periodKey,task,list,refresh,showFreq=true){
         reader.onload=e2=>{
           const img2=new Image();img2.onload=()=>{
             const canvas=document.createElement('canvas');
-            const MAX=900;let w=img2.width,h=img2.height;
+            const MAX=500;let w=img2.width,h=img2.height;
             if(w>h&&w>MAX){h=Math.round(h*MAX/w);w=MAX;}else if(h>MAX){w=Math.round(w*MAX/h);h=MAX;}
             canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(img2,0,0,w,h);
-            const comp=canvas.toDataURL('image/jpeg',.75);
+            const comp=canvas.toDataURL('image/jpeg',.35);
             const e3=getEntry(rid,type,periodKey,task.id);
             if(!e3.photos)e3.photos=[];
             if(e3.photos.length>=MAX_PHOTOS){showToast('Máximo '+MAX_PHOTOS+' fotos por tarea',true);return;}
@@ -2510,7 +2483,35 @@ function buildTaskCard(rid,type,periodKey,task,list,refresh,showFreq=true){
   cr.appendChild(di);cr.appendChild(cb);pa.appendChild(cr);
   card.appendChild(main);card.appendChild(pa);
 
-  btnP.addEventListener('click',ev=>{ev.stopPropagation();pa.classList.toggle('open');});
+  btnP.addEventListener('click',ev=>{
+    ev.stopPropagation();
+    pa.classList.toggle('open');
+    // Lazy load photos from Supabase when area opens
+    if(pa.classList.contains('open')){
+      const e4=getEntry(rid,type,periodKey,task.id);
+      const hasPhotos=(e4.photos&&e4.photos.length>0)||!!e4.photo;
+      if(!hasPhotos){
+        fetch(`${SUPA_URL}/rest/v1/bk_photos?key=eq.${encodeURIComponent(checkKey)}&select=data`,
+          {headers:{...SUPA_HDR,'Accept':'application/json'}})
+        .then(r=>r.ok?r.json():null)
+        .then(rows=>{
+          if(rows&&rows[0]?.data){
+            const e5=getEntry(rid,type,periodKey,task.id);
+            if(!e5.photos) e5.photos=[];
+            if(!e5.photos.length){
+              try{
+                const parsed=JSON.parse(rows[0].data);
+                e5.photos=Array.isArray(parsed)?parsed:[{data:rows[0].data,date:e5.date||null}];
+              }catch{ e5.photos=[{data:rows[0].data,date:e5.date||null}]; }
+              setEntry(rid,type,periodKey,task.id,e5);
+              // Re-render the photo area with loaded photos
+              refresh();
+            }
+          }
+        }).catch(()=>{});
+      }
+    }
+  });
   chk.addEventListener('click',ev=>{
     ev.stopPropagation();
     const e2=getEntry(rid,type,periodKey,task.id);
