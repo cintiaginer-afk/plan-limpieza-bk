@@ -61,6 +61,14 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .rest-tile .rt-pct{font-size:33px;font-weight:800;letter-spacing:-1px;line-height:1;}
 .rest-tile .rt-sub{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:1px;margin-top:4px;font-weight:600;}
 .rest-tile .rt-mini{margin-top:12px;height:6px;border-radius:999px;background:var(--s3);overflow:hidden;}
+.rest-tile .rt-stats{display:flex;gap:6px;margin-top:12px;}
+.rest-tile .rt-stats>div{flex:1;background:var(--s3);border-radius:9px;padding:7px 3px;text-align:center;}
+.rest-tile .rt-stats .sl{display:block;font-size:8px;font-weight:700;letter-spacing:.5px;color:var(--muted2);text-transform:uppercase;margin-bottom:2px;}
+.rest-tile .rt-stats .sv{font-size:14px;font-weight:800;}
+.rest-tile.champ{box-shadow:0 0 0 2px rgba(251,191,36,.55),0 10px 30px rgba(0,0,0,.55);}
+.rest-tile.champ::before{background:var(--yellow);box-shadow:0 0 18px var(--yellow);}
+.rest-tile .rt-crown{margin-left:auto;font-size:16px;}
+.rest-tile .rt-phrase{font-size:11px;color:rgba(251,191,36,.9);font-style:italic;margin-top:10px;line-height:1.3;}
 .resp-btn{margin-top:22px;width:100%;background:linear-gradient(135deg,rgba(251,191,36,.12),rgba(245,158,11,.06));border:1px solid rgba(251,191,36,.3);color:var(--yellow);border-radius:14px;padding:15px;font-size:14px;font-weight:700;transition:all .2s;}
 .resp-btn:hover{background:rgba(251,191,36,.16);}
 
@@ -143,7 +151,13 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .pgal img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in;}
 .pgal .rm{position:absolute;top:3px;right:3px;background:rgba(0,0,0,.6);border:none;color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;}
 .puz{border:1.5px dashed var(--border2);border-radius:10px;padding:14px;text-align:center;position:relative;font-size:12px;color:var(--muted2);}
-.puz input{position:absolute;inset:0;opacity:0;width:100%;height:100%;}
+.puz input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;}
+.pbtns{display:flex;gap:8px;}
+.pbtn{flex:1;position:relative;border:1.5px dashed var(--border2);border-radius:10px;padding:13px 8px;text-align:center;font-size:12px;font-weight:700;color:var(--muted2);background:rgba(255,255,255,.01);}
+.pbtn:hover{border-color:var(--accent);color:var(--accent2);background:rgba(99,102,241,.05);}
+.pbtn .pi{font-size:19px;display:block;margin-bottom:3px;}
+.pbtn input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;}
+.pcount{font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px;}
 
 /* winner + member phrases */
 .winner{background:linear-gradient(135deg,rgba(251,191,36,.15),rgba(245,158,11,.05));border:2px solid rgba(251,191,36,.5);border-radius:18px;padding:22px;text-align:center;position:relative;overflow:hidden;box-shadow:0 0 40px rgba(251,191,36,.12),0 8px 32px rgba(0,0,0,.3);margin-bottom:14px;}
@@ -382,6 +396,8 @@ function canCheck(){return S.role!=='view';}
 function dailyTaskList(rid){return [...getTasks(rid,'ape'),...getTasks(rid,'cie')];}
 function restDailyPct(rid){const day=todayStr();const list=dailyTaskList(rid);if(!list.length)return 0;let d=0;list.forEach(t=>{const sh=getTasks(rid,'ape').includes(t)?'ape':'cie';if(getEntry(ck(rid,'d',day,t.id)).done)d++;});return Math.round(d/list.length*100);}
 function restPeriodPct(rid){const day=todayStr(),wk=getWeekKey(0),mk=monthKey(rid,0);const keys=[];dailyTaskList(rid).forEach(t=>keys.push(ck(rid,'d',day,t.id)));Object.values(getTasks(rid,'weekly')).flat().forEach(t=>keys.push(ck(rid,'w',wk,t.id)));getTasks(rid,'monthly').forEach(t=>keys.push(ck(rid,'m',mk,t.id)));if(!keys.length)return 0;const done=keys.filter(k=>getEntry(k).done).length;return Math.round(done/keys.length*100);}
+function restWeekPct(rid){const wk=getWeekKey(0);const list=Object.values(getTasks(rid,'weekly')).flat();if(!list.length)return 0;const d=list.filter(t=>getEntry(ck(rid,'w',wk,t.id)).done).length;return Math.round(d/list.length*100);}
+function restMonthlyPct(rid){const mk=monthKey(rid,0);const list=getTasks(rid,'monthly');if(!list.length)return 0;const d=list.filter(t=>getEntry(ck(rid,'m',mk,t.id)).done).length;return Math.round(d/list.length*100);}
 function motivPhrase(pct){if(pct===0)return{e:'😴',t:'¡Aún sin empezar! El equipo te espera.'};if(pct<25)return{e:'🐢',t:'Poco a poco... ¡a por más!'};if(pct<50)return{e:'💪',t:'¡Buen ritmo! Sigue así.'};if(pct<75)return{e:'🔥',t:'¡Estás que ardes! Casi lo tienes.'};if(pct<100)return{e:'⭐',t:'Rozando la excelencia. ¡Increíble!'};return{e:'🏆',t:'¡100%! Eres el MVP del turno.'};}
 function memberPct(rid,mid){
   const day=todayStr(),wk=getWeekKey(0),mk=monthKey(rid,0);const keys=[];
@@ -402,20 +418,25 @@ function render(){
 
 /* ════════ LAUNCHER ════════ */
 function viewLauncher(){
-  const tiles=RESTAURANTS.map(r=>{const pct=restDailyPct(r.id);return `
-    <button class="rest-tile" style="--rc:${r.color}" onclick="tapRestaurant('${r.id}')">
-      <div class="rt-top"><span class="dot" style="background:${r.color};box-shadow:0 0 8px ${r.color}"></span><span class="rt-name">${esc(r.name)}</span></div>
-      <div class="rt-pct mono" style="color:${pct>0?'var(--text)':'var(--muted)'}">${pct}%</div>
-      <div class="rt-sub">cumplido hoy</div>
-      <div class="rt-mini"><span class="bar-fill" style="width:${pct}%;background:${r.color}"></span></div>
-    </button>`;}).join('');
   const monthRanked=RESTAURANTS.map(r=>({...r,mpct:restPeriodPct(r.id)})).sort((a,b)=>b.mpct-a.mpct);
   const champ=monthRanked[0].mpct>0?monthRanked[0]:null;
-  const champHtml=champ?`<div class="winner"><div class="wc">👑</div><div class="wl">Mejor restaurante del mes</div><div class="wn">${esc(champ.name)}</div><div style="margin-top:8px"><span class="dot" style="display:inline-block;background:${champ.color};box-shadow:0 0 10px ${champ.color}"></span></div><div class="wp mono">${champ.mpct}%</div><div class="ws">Cumplimiento mensual</div><div class="wph">${motivPhrase(champ.mpct).t} ✨</div></div>`:'';
+  const sc=v=>v>=60?'var(--green)':v>=25?'var(--yellow)':v>0?'var(--orange)':'var(--muted)';
+  const tiles=RESTAURANTS.map(r=>{const accum=restPeriodPct(r.id),day=restDailyPct(r.id),wkp=restWeekPct(r.id),mop=restMonthlyPct(r.id);const isChamp=champ&&r.id===champ.id;return `
+    <button class="rest-tile ${isChamp?'champ':''}" style="--rc:${r.color}" onclick="tapRestaurant('${r.id}')">
+      <div class="rt-top"><span class="dot" style="background:${r.color};box-shadow:0 0 8px ${r.color}"></span><span class="rt-name">${esc(r.name)}</span>${isChamp?'<span class="rt-crown">👑</span>':''}</div>
+      <div class="rt-pct mono" style="color:${accum>0?'var(--text)':'var(--muted)'}">${accum}%</div>
+      <div class="rt-sub">acumulado del mes</div>
+      <div class="rt-mini"><span class="bar-fill" style="width:${accum}%;background:${isChamp?'var(--yellow)':r.color}"></span></div>
+      <div class="rt-stats">
+        <div><span class="sl">Hoy</span><span class="sv mono" style="color:${sc(day)}">${day}%</span></div>
+        <div><span class="sl">Semana</span><span class="sv mono" style="color:${sc(wkp)}">${wkp}%</span></div>
+        <div><span class="sl">Mes</span><span class="sv mono" style="color:${sc(mop)}">${mop}%</span></div>
+      </div>
+      ${isChamp?`<div class="rt-phrase">👑 ${motivPhrase(accum).t}</div>`:''}
+    </button>`;}).join('');
   return `<div class="wrap" id="launcher">
     <div class="lh-head"><span class="bk-pill">BK</span><span class="lh-title">Plan de Limpieza</span></div>
     <div class="lh-sub">Elige tu restaurante para fichar las tareas de hoy</div>
-    ${champHtml}
     <div class="rest-grid">${tiles}</div>
     <button class="resp-btn" onclick="tapResponsable()">👤 Cintia</button>
   </div>`;
@@ -648,7 +669,7 @@ async function togglePhoto(el){
 function renderPhotoArea(c){
   const key=c.dataset.key;const area=c.querySelector('.photo-area');const e=getEntry(key);const photos=e.photos||[];const MAX=3;
   let gal=photos.length?`<div class="pgal">${photos.map((p,i)=>`<div class="pw"><img src="${p.data}" onclick="showLB('${'PH'+i}')" data-full="${i}">${S.role!=='view'?`<button class="rm" onclick="rmPhoto(this,${i})">✕</button>`:''}</div>`).join('')}</div>`:'';
-  let uz=(photos.length<MAX&&S.role!=='view')?`<div class="puz">📸 Añadir foto (${photos.length}/${MAX})<input type="file" accept="image/*" capture="environment" onchange="addPhoto(this)"></div>`:(photos.length>=MAX?`<div style="font-size:11px;color:var(--muted);text-align:center;padding:6px">Máximo ${MAX} fotos</div>`:(photos.length?'':`<div style="font-size:11px;color:var(--muted);text-align:center;padding:6px">Sin fotos</div>`));
+  let uz=(photos.length<MAX&&S.role!=='view')?`<div class="pcount">Evidencia · ${photos.length}/${MAX} fotos</div><div class="pbtns"><label class="pbtn"><span class="pi">📷</span>Hacer foto<input type="file" accept="image/*" capture="environment" onchange="addPhoto(this)"></label><label class="pbtn"><span class="pi">🖼️</span>Subir de galería<input type="file" accept="image/*" onchange="addPhoto(this)"></label></div>`:(photos.length>=MAX?`<div style="font-size:11px;color:var(--muted);text-align:center;padding:6px">Máximo ${MAX} fotos</div>`:(photos.length?'':`<div style="font-size:11px;color:var(--muted);text-align:center;padding:6px">Sin fotos</div>`));
   area.innerHTML=gal+uz;
   area.querySelectorAll('.pgal img').forEach((img,i)=>img.onclick=()=>showLB(photos[i].data));
 }
@@ -756,11 +777,40 @@ function backToLauncher(){S={...S,view:'launcher',rid:null,role:null,member:null
 
 function bindDynamic(){}
 
+/* ════════ SERVICE WORKER (offline shell) ════════
+   Cachea la propia página para que abra sin conexión.
+   Los datos de Supabase siguen requiriendo internet, pero la app
+   arranca y muestra lo último cacheado (localStorage) estando offline. */
+function registerSW(){
+  if(!('serviceWorker' in navigator))return;
+  try{
+    const swCode=`
+      const C='bk-limpieza-v2';
+      self.addEventListener('install',e=>{self.skipWaiting();});
+      self.addEventListener('activate',e=>{e.waitUntil(self.clients.claim());});
+      self.addEventListener('fetch',e=>{
+        const u=new URL(e.request.url);
+        if(u.hostname.indexOf('supabase')>-1)return; // datos: siempre a la red
+        if(e.request.method!=='GET')return;
+        e.respondWith(
+          caches.open(C).then(cache=>
+            fetch(e.request).then(res=>{try{cache.put(e.request,res.clone());}catch(_){}; return res;})
+            .catch(()=>cache.match(e.request).then(m=>m||cache.match('./')))
+          )
+        );
+      });`;
+    const url=URL.createObjectURL(new Blob([swCode],{type:'text/javascript'}));
+    navigator.serviceWorker.register(url).catch(()=>{});
+  }catch(e){}
+}
+
 /* ════════ BOOT ════════ */
 async function boot(){
   buildPinKeys();
-  await loadFromSupabase();
+  registerSW();
+  const ok=await loadFromSupabase();
   $('boot').style.display='none';$('app').style.display='block';
+  if(!ok)toast('Sin conexión — mostrando datos guardados',true);
   render();
 }
 boot();
